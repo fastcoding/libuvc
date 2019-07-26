@@ -769,7 +769,7 @@ void uvc_release_handle(uvc_device_handle_t *devh) {
   UVC_EXIT_VOID();
 }
 
-uvc_device_handle_t *uvc_from_libusb_handle(uvc_context_t*ctx,libusb_device_handle *usb_devh) {
+uvc_device_handle_t *uvc_from_libusb_handle(uvc_context_t*ctx,struct libusb_device_handle *usb_devh) {
   uvc_device_handle_t *internal_devh=NULL;
 	uvc_device_t *uvc_dev=NULL;
 	uvc_error_t ret;

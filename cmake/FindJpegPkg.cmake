@@ -72,7 +72,7 @@ if (NOT TARGET JPEG::JPEG)
       endif()
       if(IMPORTED_JPEG_LIBRARIES)
         set_target_properties(JPEG::JPEG PROPERTIES
-          IMPORTED_LINK_INTERFACE_LANGUAGES "C" 
+          IMPORTED_LINK_INTERFACE_LANGUAGES "C"
           IMPORTED_LOCATION ${IMPORTED_JPEG_LIBRARIES}
         )
       endif()

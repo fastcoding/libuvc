@@ -558,7 +558,7 @@ uvc_error_t uvc_open(
     uvc_device_handle_t **devh);
 void uvc_close(uvc_device_handle_t *devh);
 void uvc_release_handle(uvc_device_handle_t *devh);
-uvc_device_handle_t* uvc_from_libusb_handle(uvc_context_t*ctx,libusb_device_handle *usb_devh) ;
+uvc_device_handle_t* uvc_from_libusb_handle(uvc_context_t*ctx,struct libusb_device_handle *usb_devh) ;
 uvc_device_t *uvc_get_device(uvc_device_handle_t *devh);
 struct libusb_device_handle *uvc_get_libusb_handle(uvc_device_handle_t *devh);
 
