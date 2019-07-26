@@ -106,7 +106,7 @@ if(BUILD_UVC_SHARED)
     target_link_libraries (uvc ${JPEG_LINK_FLAGS})
   endif(JPEG_FOUND)
 
-  target_link_libraries(uvc ${LIBUSB_LIBRARIES})
+  target_link_libraries(uvc ${LIBUSB_LIBRARIES} -Wl,--no-warn-shared-textrel)
 
   #add_executable(test src/test.c)
   #target_link_libraries(test uvc ${LIBUSB_LIBRARIES} opencv_highgui

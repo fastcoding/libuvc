@@ -723,6 +723,177 @@ libusb_device_handle *uvc_get_libusb_handle(uvc_device_handle_t *devh) {
   return devh->usb_devh;
 }
 
+void uvc_release_handle(uvc_device_handle_t *devh) {
+  UVC_ENTER();
+
+  uvc_context_t *ctx = devh->dev->ctx;
+
+  if (devh->streams)
+    uvc_stop_streaming(devh);
+
+  uvc_release_if(devh, devh->info->ctrl_if.bInterfaceNumber);
+
+  /* If we are managing the libusb context and this is the last open device,
+   * then we need to cancel the handler thread. When we call libusb_close,
+   * it'll cause a return from the thread's libusb_handle_events call, after
+   * which the handler thread will check the flag we set and then exit. */
+  if (ctx->own_usb_ctx && ctx->open_devices == devh && devh->next == NULL) {
+    ctx->kill_handler_thread = 1;
+    //libusb_close(devh->usb_devh);
+    pthread_join(ctx->handler_thread, NULL);
+  } else {
+    //libusb_close(devh->usb_devh);
+  }
+
+  DL_DELETE(ctx->open_devices, devh);
+
+  uvc_unref_device(devh->dev);
+
+  uvc_free_devh(devh);
+
+  UVC_EXIT_VOID();
+}
+
+uvc_device_handle_t *uvc_from_libusb_handle(uvc_context_t*ctx,libusb_device_handle *usb_devh) {
+  uvc_device_handle_t *internal_devh=NULL;
+	uvc_device_t *uvc_dev=NULL;
+	uvc_error_t ret;
+	struct libusb_device *usb_dev=libusb_get_device(usb_devh);
+
+	/* per device */
+	int dev_idx;
+	struct libusb_config_descriptor *config;
+	struct libusb_device_descriptor desc;
+	uint8_t got_interface;
+
+	/* per interface */
+	int interface_idx;
+	const struct libusb_interface *interface;
+
+	/* per altsetting */
+	int altsetting_idx;
+	const struct libusb_interface_descriptor *if_desc;
+
+	UVC_ENTER();
+
+		got_interface = 0;
+		ret=libusb_get_config_descriptor(usb_dev, 0, &config);
+		if (ret != 0){
+			  goto fail;
+		}
+
+
+		if ( libusb_get_device_descriptor ( usb_dev, &desc ) != LIBUSB_SUCCESS ){
+			 libusb_free_config_descriptor(config);
+			 goto fail;
+		}
+
+		for (interface_idx = 0;
+	 !got_interface && interface_idx < config->bNumInterfaces;
+	 ++interface_idx) {
+			interface = &config->interface[interface_idx];
+
+			for (altsetting_idx = 0;
+		 !got_interface && altsetting_idx < interface->num_altsetting;
+		 ++altsetting_idx) {
+	if_desc = &interface->altsetting[altsetting_idx];
+
+				// Skip TIS cameras that definitely aren't UVC even though they might
+				// look that way
+
+				if ( 0x199e == desc.idVendor && desc.idProduct  >= 0x8201 &&
+						desc.idProduct <= 0x8208 ) {
+					continue;
+				}
+
+				// Special case for Imaging Source cameras
+				/* Video, Streaming */
+				if ( 0x199e == desc.idVendor && ( 0x8101 == desc.idProduct ||
+						0x8102 == desc.idProduct ) &&
+						if_desc->bInterfaceClass == 255 &&
+						if_desc->bInterfaceSubClass == 2 )
+				{
+							got_interface = 1;
+				}
+
+				/* Video, Streaming */
+				if (if_desc->bInterfaceClass == 14 && if_desc->bInterfaceSubClass == 2) {
+					got_interface = 1;
+				}
+			}
+		}
+
+		libusb_free_config_descriptor(config);
+
+		if (got_interface) {
+			uvc_dev = malloc(sizeof(*uvc_dev));
+			uvc_dev->ctx = ctx;
+			uvc_dev->ref = 0;
+			uvc_dev->usb_dev = usb_dev;
+			uvc_ref_device(uvc_dev);
+
+			internal_devh = calloc(1, sizeof(*internal_devh));
+			internal_devh->dev = uvc_dev;
+			internal_devh->usb_devh = usb_devh;
+
+			ret = uvc_get_device_info(uvc_dev, &(internal_devh->info));
+			if (ret != UVC_SUCCESS)
+		    goto fail;
+			UVC_DEBUG("claiming control interface %d", internal_devh->info->ctrl_if.bInterfaceNumber);
+			ret = uvc_claim_if(internal_devh, internal_devh->info->ctrl_if.bInterfaceNumber);
+			if (ret != UVC_SUCCESS)
+				goto fail;
+
+
+			internal_devh->is_isight = (desc.idVendor == 0x05ac && desc.idProduct == 0x8501);
+
+			if (internal_devh->info->ctrl_if.bEndpointAddress) {
+				internal_devh->status_xfer = libusb_alloc_transfer(0);
+				if (!internal_devh->status_xfer) {
+					ret = UVC_ERROR_NO_MEM;
+					goto fail;
+				}
+
+				libusb_fill_interrupt_transfer(internal_devh->status_xfer,
+																			 usb_devh,
+																			 internal_devh->info->ctrl_if.bEndpointAddress,
+																			 internal_devh->status_buf,
+																			 sizeof(internal_devh->status_buf),
+																			 _uvc_status_callback,
+																			 internal_devh,
+																			 0);
+				ret = libusb_submit_transfer(internal_devh->status_xfer);
+				UVC_DEBUG("libusb_submit_transfer() = %d", ret);
+
+				if (ret) {
+					fprintf(stderr,
+									"uvc: device has a status interrupt endpoint, but unable to read from it\n");
+					goto fail;
+				}
+			}
+
+			if (ctx->own_usb_ctx && ctx->open_devices == NULL) {
+				/* Since this is our first device, we need to spawn the event handler thread */
+				uvc_start_handler_thread(ctx);
+			}
+
+			DL_APPEND(ctx->open_devices, internal_devh);
+
+			UVC_EXIT(ret);
+			return internal_devh;
+		}
+fail:
+	if (internal_devh){
+		if ( internal_devh->info ) {
+	    uvc_release_if(internal_devh, internal_devh->info->ctrl_if.bInterfaceNumber);
+	  }
+	  uvc_unref_device(uvc_dev);
+	  uvc_free_devh(internal_devh);
+	}
+	UVC_EXIT(ret);
+	return NULL;
+}
+
 /**
  * @brief Get camera terminal descriptor for the open device.
  *
@@ -1659,12 +1830,12 @@ void uvc_process_control_status(uvc_device_handle_t *devh, unsigned char *data, 
                     content, content_len,
                     devh->status_user_ptr);
   }
-  
+
   UVC_EXIT_VOID();
 }
 
 void uvc_process_streaming_status(uvc_device_handle_t *devh, unsigned char *data, int len) {
-  
+
   UVC_ENTER();
 
   if (len < 3) {
@@ -1680,7 +1851,7 @@ void uvc_process_streaming_status(uvc_device_handle_t *devh, unsigned char *data
       return;
     }
     UVC_DEBUG("Button (intf %u) %s len %d\n", data[1], data[3] ? "pressed" : "released", len);
-    
+
     if(devh->button_cb) {
       UVC_DEBUG("Running user-supplied button callback");
       devh->button_cb(data[1],
@@ -1695,7 +1866,7 @@ void uvc_process_streaming_status(uvc_device_handle_t *devh, unsigned char *data
 }
 
 void uvc_process_status_xfer(uvc_device_handle_t *devh, struct libusb_transfer *transfer) {
-  
+
   UVC_ENTER();
 
   /* printf("Got transfer of aLen = %d\n", transfer->actual_length); */
@@ -1788,4 +1959,3 @@ void uvc_set_button_callback(uvc_device_handle_t *devh,
 const uvc_format_desc_t *uvc_get_format_descs(uvc_device_handle_t *devh) {
   return devh->info->stream_ifs->format_descs;
 }
-
